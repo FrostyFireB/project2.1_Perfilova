@@ -2,6 +2,10 @@ import shlex
 
 import prompt
 
+from prettytable import PrettyTable
+
+from src.primitive_db.core import insert, select, update, delete, table_info, _parse_value
+from src.primitive_db.utils import load_table_data, save_table_data
 from src.primitive_db.core import create_table, drop_table, list_tables
 from src.primitive_db.utils import load_metadata, save_metadata
 
@@ -17,6 +21,29 @@ def print_help():
     print("\nОбщие команды:")
     print("<command> exit - выход из программы")
     print("<command> help - справочная информация\n")
+
+
+def get_col_type(metadata, table_name, col_name):
+    for col in metadata[table_name]:
+        if col["name"] == col_name:
+            return col["type"]
+    return None
+
+
+def normalize_value_for_core(raw_value, typ):
+    if typ == "str":
+        # если кавычек нет — добавляем
+        if not (len(raw_value) >= 2 and raw_value[0] == '"' and raw_value[-1] == '"'):
+            return f'"{raw_value}"'
+    return raw_value
+
+
+def parse_simple_condition(text):
+    text = text.strip()
+    if "=" not in text:
+        raise ValueError(f"Некорректное значение: {text}.")
+    left, right = text.split("=", 1)
+    return left.strip(), right.strip()
 
 
 def run():
@@ -97,5 +124,219 @@ def run():
             print(f'Таблица "{table_name}" успешно создана.')
             continue
 
-        print(f"Функции {command} нет. Попробуйте снова.")
+        if command == "info":
+            if len(args) != 2:
+                print("Некорректное значение: info. Попробуйте снова.")
+                continue
 
+            table_name = args[1]
+            if table_name not in metadata:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
+
+            table_data = load_table_data(table_name)
+            try:
+                cols_str, count = table_info(metadata, table_name, table_data)
+            except ValueError as e:
+                print(f"Ошибка: {e}")
+                continue
+
+            print(f"Таблица {table_name}")
+            print(f"Столбцы: {cols_str}")
+            print(f"Количество записей: {count}")
+            continue
+
+        if command == "insert":
+            # минимально ожидаем: insert into <table> values (...)
+            if len(args) < 5 or args[1] != "into":
+                print("Некорректное значение: insert. Попробуйте снова.")
+                continue
+
+            table_name = args[2]
+            if table_name not in metadata:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
+
+            # восстанавливаем "values (...)" из исходной строки, чтобы вытащить то, что в скобках
+            lower = user_input.lower()
+            pos = lower.find("values")
+            if pos == -1:
+                print("Некорректное значение: values. Попробуйте снова.")
+                continue
+
+            values_part = user_input[pos + len("values"):].strip()
+            if not (values_part.startswith("(") and values_part.endswith(")")):
+                print("Некорректное значение: values. Попробуйте снова.")
+                continue
+
+            inside = values_part[1:-1].strip()
+            # значения разделены запятыми
+            raw_values = [v.strip() for v in inside.split(",")] if inside else []
+
+            table_data = load_table_data(table_name)
+
+            # подгоняем строки под core.py (для str добавим кавычки, если shlex их убрал)
+            user_columns = [c for c in metadata[table_name] if c["name"] != "ID"]
+            if len(raw_values) != len(user_columns):
+                print("Некорректное значение: values. Попробуйте снова.")
+                continue
+
+            normalized_values = []
+            for i, col in enumerate(user_columns):
+                normalized_values.append(normalize_value_for_core(raw_values[i], col["type"]))
+
+            try:
+                table_data, new_id = insert(metadata, table_name, table_data, normalized_values)
+            except ValueError as e:
+                msg = str(e)
+                if msg.startswith("Некорректное значение:"):
+                    print(f"{msg} Попробуйте снова.")
+                else:
+                    print(f"Ошибка: {msg}")
+                continue
+
+            save_table_data(table_name, table_data)
+            print(f'Запись с ID={new_id} успешно добавлена в таблицу "{table_name}".')
+            continue
+
+        if command == "select":
+            if len(args) < 3 or args[1] != "from":
+                print("Некорректное значение: select. Попробуйте снова.")
+                continue
+
+            table_name = args[2]
+            if table_name not in metadata:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
+
+            table_data = load_table_data(table_name)
+
+            where_clause = None
+            lower = user_input.lower()
+            idx = lower.find(" where ")
+            if idx != -1:
+                where_text = user_input[idx + len(" where "):].strip()            
+            
+                try:
+                    col, raw_val = parse_simple_condition(where_text)
+                except ValueError as e:
+                    print(f"{e} Попробуйте снова.")
+                    continue
+
+                typ = get_col_type(metadata, table_name, col)
+                if typ is None:
+                    print(f"Некорректное значение: {col}. Попробуйте снова.")
+                    continue
+
+                raw_val = normalize_value_for_core(raw_val, typ)
+                where_clause = {col: _parse_value(raw_val, typ)}
+
+            rows = select(table_data, where_clause)
+
+            cols = [c["name"] for c in metadata[table_name]]
+            t = PrettyTable()
+            t.field_names = cols
+            for row in rows:
+                t.add_row([row.get(c) for c in cols])
+            print(t)
+            continue
+
+        if command == "update":
+            if len(args) < 6 or args[2] != "set":
+                print("Некорректное значение: update. Попробуйте снова.")
+                continue
+
+            table_name = args[1]
+            if table_name not in metadata:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
+
+            lower = user_input.lower()
+            set_idx = lower.find(" set ")
+            where_idx = lower.find(" where ")
+            if set_idx == -1 or where_idx == -1 or where_idx < set_idx:
+                print("Некорректное значение: update. Попробуйте снова.")
+                continue        
+
+            set_text = user_input[set_idx + len(" set "):where_idx].strip()
+            where_text = user_input[where_idx + len(" where "):].strip()
+
+            try:
+                set_col, set_raw = parse_simple_condition(set_text)
+                where_col, where_raw = parse_simple_condition(where_text)
+            except ValueError as e:
+                print(f"{e} Попробуйте снова.")
+                continue
+
+            set_typ = get_col_type(metadata, table_name, set_col)
+            where_typ = get_col_type(metadata, table_name, where_col)
+            if set_typ is None or where_typ is None:
+                print("Некорректное значение: column. Попробуйте снова.")
+                continue
+
+            set_raw = normalize_value_for_core(set_raw, set_typ)
+            where_raw = normalize_value_for_core(where_raw, where_typ)
+
+            set_clause = {set_col: _parse_value(set_raw, set_typ)}
+            where_clause = {where_col: _parse_value(where_raw, where_typ)}
+
+            table_data = load_table_data(table_name)
+
+            matched_rows = select(table_data, where_clause)
+            matched_ids = [r.get("ID") for r in matched_rows if "ID" in r]
+
+            table_data, updated = update(table_data, set_clause, where_clause)
+            save_table_data(table_name, table_data)
+
+            if updated == 1 and len(matched_ids) == 1:
+                print(f'Запись с ID={matched_ids[0]} в таблице "{table_name}" успешно обновлена.')
+            else:
+                print(f"Обновлено записей: {updated}")
+            continue
+
+        if command == "delete":
+            if len(args) < 5 or args[1] != "from":
+                print("Некорректное значение: delete. Попробуйте снова.")
+                continue
+
+            table_name = args[2]
+            if table_name not in metadata:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
+
+            lower = user_input.lower()
+            idx = lower.find(" where ")
+            if idx == -1:
+                print("Некорректное значение: where. Попробуйте снова.")
+                continue
+            
+            where_text = user_input[idx + len(" where "):].strip()
+            try:
+                where_col, where_raw = parse_simple_condition(where_text)
+            except ValueError as e:
+                print(f"{e} Попробуйте снова.")
+                continue
+
+            where_typ = get_col_type(metadata, table_name, where_col)
+            if where_typ is None:
+                print(f"Некорректное значение: {where_col}. Попробуйте снова.")
+                continue
+
+            where_raw = normalize_value_for_core(where_raw, where_typ)
+            where_clause = {where_col: _parse_value(where_raw, where_typ)}
+
+            table_data = load_table_data(table_name)
+
+            matched_rows = select(table_data, where_clause)
+            matched_ids = [r.get("ID") for r in matched_rows if "ID" in r]
+
+            new_data, deleted = delete(table_data, where_clause)
+            save_table_data(table_name, new_data)
+
+            if deleted == 1 and len(matched_ids) == 1:
+                print(f'Запись с ID={matched_ids[0]} успешно удалена из таблицы "{table_name}".')
+            else:
+                print(f"Удалено записей: {deleted}")
+            continue
+
+        print(f"Функции {command} нет. Попробуйте снова.")

@@ -16,3 +16,6 @@ dist/
 
 # Database metadata (generated file)
 db_meta.json
+
+# Data files (generated)
+data/*.json
