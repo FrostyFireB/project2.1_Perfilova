@@ -14,9 +14,9 @@ def create_table(metadata, table_name, columns):
             raise ValueError("Некорректное значение: ID.")
     
     columns_wo_id = []
-        for n, t in columns:
-            if n != "ID":
-                columns_wo_id.append((n, t))
+    for n, t in columns:
+        if n != "ID":
+            columns_wo_id.append((n, t))
 
     columns = [("ID", "int")] + columns_wo_id
     metadata[table_name] = [{"name": n, "type": t} for n, t in columns]

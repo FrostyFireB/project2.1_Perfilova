@@ -13,3 +13,6 @@ __pycache__/
 
 # Build artifacts
 dist/
+
+# Database metadata (generated file)
+db_meta.json
