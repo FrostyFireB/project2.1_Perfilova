@@ -1,13 +1,26 @@
 import shlex
+from pathlib import Path
 
 import prompt
-
 from prettytable import PrettyTable
 
-from src.primitive_db.core import insert, select, update, delete, table_info, _parse_value
-from src.primitive_db.utils import load_table_data, save_table_data
-from src.primitive_db.core import create_table, drop_table, list_tables
-from src.primitive_db.utils import load_metadata, save_metadata
+from src.primitive_db.core import (
+    _parse_value,
+    create_table,
+    delete,
+    drop_table,
+    insert,
+    list_tables,
+    select,
+    table_info,
+    update,
+)
+from src.primitive_db.utils import (
+    load_metadata,
+    load_table_data,
+    save_metadata,
+    save_table_data,
+)
 
 META_FILE = "db_meta.json"
 
@@ -15,7 +28,10 @@ META_FILE = "db_meta.json"
 def print_help():
     print("\n***Процесс работы с таблицей***")
     print("Функции:")
-    print("<command> create_table <имя_таблицы> <столбец1:тип> <столбец2:тип> .. - создать таблицу")
+    print(
+        "<command> create_table <имя_таблицы> <столбец1:тип> <столбец2:тип> .. "
+        "- создать таблицу"
+    )
     print("<command> list_tables - показать список всех таблиц")
     print("<command> drop_table <имя_таблицы> - удалить таблицу")
     print("\nОбщие команды:")
@@ -91,6 +107,10 @@ def run():
                 continue
             
             save_metadata(META_FILE, metadata)
+
+            data_path = Path("data") / f"{table_name}.json"
+            if data_path.exists():
+                data_path.unlink()
             print(f'Таблица "{table_name}" успешно удалена.')
             continue
 
@@ -157,7 +177,8 @@ def run():
                 print(f'Ошибка: Таблица "{table_name}" не существует.')
                 continue
 
-            # восстанавливаем "values (...)" из исходной строки, чтобы вытащить то, что в скобках
+            # восстанавливаем "values (...)" из исходной строки,
+            # чтобы вытащить то, что в скобках
             lower = user_input.lower()
             pos = lower.find("values")
             if pos == -1:
@@ -175,18 +196,26 @@ def run():
 
             table_data = load_table_data(table_name)
 
-            # подгоняем строки под core.py (для str добавим кавычки, если shlex их убрал)
-            user_columns = [c for c in metadata[table_name] if c["name"] != "ID"]
+            # подгоняем строки под core.py (для str добавим кавычки,
+            # если shlex их убрал)
+            user_columns = [
+                c for c in metadata[table_name]
+                if c["name"] != "ID"
+            ]
             if len(raw_values) != len(user_columns):
                 print("Некорректное значение: values. Попробуйте снова.")
                 continue
 
             normalized_values = []
             for i, col in enumerate(user_columns):
-                normalized_values.append(normalize_value_for_core(raw_values[i], col["type"]))
+                normalized_values.append(
+                    normalize_value_for_core(raw_values[i], col["type"])
+                )
 
             try:
-                table_data, new_id = insert(metadata, table_name, table_data, normalized_values)
+                table_data, new_id = insert(
+                    metadata, table_name, table_data, normalized_values
+                )
             except ValueError as e:
                 msg = str(e)
                 if msg.startswith("Некорректное значение:"):
@@ -289,7 +318,10 @@ def run():
             save_table_data(table_name, table_data)
 
             if updated == 1 and len(matched_ids) == 1:
-                print(f'Запись с ID={matched_ids[0]} в таблице "{table_name}" успешно обновлена.')
+                print(
+                    f'Запись с ID={matched_ids[0]} в таблице "{table_name}" '
+                    "успешно обновлена."
+                )
             else:
                 print(f"Обновлено записей: {updated}")
             continue
@@ -334,7 +366,11 @@ def run():
             save_table_data(table_name, new_data)
 
             if deleted == 1 and len(matched_ids) == 1:
-                print(f'Запись с ID={matched_ids[0]} успешно удалена из таблицы "{table_name}".')
+                print(
+                    f"Запись с ID={matched_ids[0]} успешно удалена "
+                    f'из таблицы "{table_name}".'
+                )
+
             else:
                 print(f"Удалено записей: {deleted}")
             continue

@@ -1,8 +1,8 @@
- install:
+install:
 		poetry install
- project:
-		poetry run project
- build:
+database:
+		poetry run database
+build:
 		poetry build
 publish:
 		poetry publish --dry-run

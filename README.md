@@ -48,7 +48,7 @@ poetry install
 ```
 
 Запуск приложения:
-```poetry run project
+```poetry run database
 ```
 
 
