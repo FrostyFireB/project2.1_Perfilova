@@ -40,7 +40,10 @@ def print_help():
 
 
 def get_col_type(metadata, table_name, col_name):
-    for col in metadata[table_name]:
+    cols = metadata.get(table_name)
+    if not cols:
+        return None
+    for col in cols:
         if col["name"] == col_name:
             return col["type"]
     return None
@@ -62,12 +65,23 @@ def parse_simple_condition(text):
     return left.strip(), right.strip()
 
 
+def safe_load_table_data(table_name):
+    try:
+        return load_table_data(table_name)
+    except FileNotFoundError:
+        print(
+            "Ошибка: файл данных не найден. Возможно, база данных не инициализирована."
+        )
+        return None
+
+
 def run():
     print("***База данных***")
     print_help()
 
+    metadata = load_metadata(META_FILE)
+
     while True:
-        metadata = load_metadata(META_FILE)
 
         user_input = prompt.string(">>>Введите команду: ")
         if not user_input.strip():
@@ -100,17 +114,17 @@ def run():
                 continue
             
             table_name = args[1]
-            try:
-                metadata = drop_table(metadata, table_name)
-            except ValueError as e:
-                print(f"Ошибка: {e}")
+            res = drop_table(metadata, table_name)
+            if res is None:
                 continue
-            
+
+            metadata = res
             save_metadata(META_FILE, metadata)
 
             data_path = Path("data") / f"{table_name}.json"
             if data_path.exists():
                 data_path.unlink()
+            
             print(f'Таблица "{table_name}" успешно удалена.')
             continue
 
@@ -133,12 +147,11 @@ def run():
             if columns is None:
                 continue
 
-            try:
-                metadata = create_table(metadata, table_name, columns)
-            except ValueError as e:
-                print(f"Ошибка: {e}")
+            metadata2 = create_table(metadata, table_name, columns)
+            if metadata2 is None:
                 continue
 
+            metadata = metadata2
             save_metadata(META_FILE, metadata)
 
             print(f'Таблица "{table_name}" успешно создана.')
@@ -150,33 +163,29 @@ def run():
                 continue
 
             table_name = args[1]
-            if table_name not in metadata:
-                print(f'Ошибка: Таблица "{table_name}" не существует.')
+
+            table_data = safe_load_table_data(table_name)
+            if table_data is None:
                 continue
 
-            table_data = load_table_data(table_name)
-            try:
-                cols_str, count = table_info(metadata, table_name, table_data)
-            except ValueError as e:
-                print(f"Ошибка: {e}")
+            res = table_info(metadata, table_name, table_data)
+            if res is None:
                 continue
 
-            print(f"Таблица {table_name}")
+            cols_str, count = res
+            print(f'Таблица "{table_name}"')
             print(f"Столбцы: {cols_str}")
             print(f"Количество записей: {count}")
             continue
 
         if command == "insert":
-            # минимально ожидаем: insert into <table> values (...)
+
             if len(args) < 5 or args[1] != "into":
                 print("Некорректное значение: insert. Попробуйте снова.")
                 continue
 
             table_name = args[2]
-            if table_name not in metadata:
-                print(f'Ошибка: Таблица "{table_name}" не существует.')
-                continue
-
+            
             # восстанавливаем "values (...)" из исходной строки,
             # чтобы вытащить то, что в скобках
             lower = user_input.lower()
@@ -191,17 +200,24 @@ def run():
                 continue
 
             inside = values_part[1:-1].strip()
-            # значения разделены запятыми
+
             raw_values = [v.strip() for v in inside.split(",")] if inside else []
 
-            table_data = load_table_data(table_name)
+            table_data = safe_load_table_data(table_name)
+            if table_data is None:
+                continue
 
             # подгоняем строки под core.py (для str добавим кавычки,
             # если shlex их убрал)
-            user_columns = [
+            try:
+                user_columns = [
                 c for c in metadata[table_name]
                 if c["name"] != "ID"
             ]
+            except KeyError:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
+
             if len(raw_values) != len(user_columns):
                 print("Некорректное значение: values. Попробуйте снова.")
                 continue
@@ -212,18 +228,11 @@ def run():
                     normalize_value_for_core(raw_values[i], col["type"])
                 )
 
-            try:
-                table_data, new_id = insert(
-                    metadata, table_name, table_data, normalized_values
-                )
-            except ValueError as e:
-                msg = str(e)
-                if msg.startswith("Некорректное значение:"):
-                    print(f"{msg} Попробуйте снова.")
-                else:
-                    print(f"Ошибка: {msg}")
+            res = insert(metadata, table_name, table_data, normalized_values)
+            if res is None:
                 continue
 
+            table_data, new_id = res
             save_table_data(table_name, table_data)
             print(f'Запись с ID={new_id} успешно добавлена в таблицу "{table_name}".')
             continue
@@ -234,11 +243,10 @@ def run():
                 continue
 
             table_name = args[2]
-            if table_name not in metadata:
-                print(f'Ошибка: Таблица "{table_name}" не существует.')
-                continue
 
-            table_data = load_table_data(table_name)
+            table_data = safe_load_table_data(table_name)
+            if table_data is None:
+                continue
 
             where_clause = None
             lower = user_input.lower()
@@ -261,8 +269,15 @@ def run():
                 where_clause = {col: _parse_value(raw_val, typ)}
 
             rows = select(table_data, where_clause)
+            if rows is None:
+                continue
+            
+            try:
+                cols = [c["name"] for c in metadata[table_name]]
+            except KeyError:
+                print(f'Ошибка: Таблица "{table_name}" не существует.')
+                continue
 
-            cols = [c["name"] for c in metadata[table_name]]
             t = PrettyTable()
             t.field_names = cols
             for row in rows:
@@ -276,9 +291,6 @@ def run():
                 continue
 
             table_name = args[1]
-            if table_name not in metadata:
-                print(f'Ошибка: Таблица "{table_name}" не существует.')
-                continue
 
             lower = user_input.lower()
             set_idx = lower.find(" set ")
@@ -309,12 +321,20 @@ def run():
             set_clause = {set_col: _parse_value(set_raw, set_typ)}
             where_clause = {where_col: _parse_value(where_raw, where_typ)}
 
-            table_data = load_table_data(table_name)
+            table_data = safe_load_table_data(table_name)
+            if table_data is None:
+                continue
 
             matched_rows = select(table_data, where_clause)
+            if matched_rows is None:
+                continue
             matched_ids = [r.get("ID") for r in matched_rows if "ID" in r]
 
-            table_data, updated = update(table_data, set_clause, where_clause)
+            res = update(table_data, set_clause, where_clause)
+            if res is None:
+                continue
+
+            table_data, updated = res
             save_table_data(table_name, table_data)
 
             if updated == 1 and len(matched_ids) == 1:
@@ -332,9 +352,6 @@ def run():
                 continue
 
             table_name = args[2]
-            if table_name not in metadata:
-                print(f'Ошибка: Таблица "{table_name}" не существует.')
-                continue
 
             lower = user_input.lower()
             idx = lower.find(" where ")
@@ -357,12 +374,20 @@ def run():
             where_raw = normalize_value_for_core(where_raw, where_typ)
             where_clause = {where_col: _parse_value(where_raw, where_typ)}
 
-            table_data = load_table_data(table_name)
+            table_data = safe_load_table_data(table_name)
+            if table_data is None:
+                continue
 
             matched_rows = select(table_data, where_clause)
+            if matched_rows is None:
+                continue
             matched_ids = [r.get("ID") for r in matched_rows if "ID" in r]
 
-            new_data, deleted = delete(table_data, where_clause)
+            res = delete(table_data, where_clause)
+            if res is None:
+                continue
+
+            new_data, deleted = res
             save_table_data(table_name, new_data)
 
             if deleted == 1 and len(matched_ids) == 1:

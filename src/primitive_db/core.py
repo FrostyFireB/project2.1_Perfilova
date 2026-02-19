@@ -1,3 +1,16 @@
+from src.primitive_db.decorators import (
+    confirm_action,
+    create_cacher,
+    handle_db_errors,
+    log_time,
+)
+
+_select_cache = create_cacher()
+
+def _reset_select_cache():
+    global _select_cache
+    _select_cache = create_cacher()
+
 ALLOWED_TYPES = {"int", "str", "bool"}
 
 def _parse_value(value: str, typ: str):
@@ -19,6 +32,7 @@ def _parse_value(value: str, typ: str):
         raise ValueError(f"Некорректное значение: {value}.")
     raise ValueError(f"Некорректное значение: {typ}.")
 
+@handle_db_errors
 def create_table(metadata, table_name, columns):
     if table_name in metadata:
         raise ValueError(f'Таблица "{table_name}" уже существует.')
@@ -36,19 +50,25 @@ def create_table(metadata, table_name, columns):
 
     columns = [("ID", "int")] + columns_wo_id
     metadata[table_name] = [{"name": n, "type": t} for n, t in columns]
+    _reset_select_cache()
     return metadata
 
 
+@handle_db_errors
+@confirm_action("удаление таблицы")
 def drop_table(metadata, table_name):
     if table_name not in metadata:
         raise ValueError(f'Таблица "{table_name}" не существует.')
     del metadata[table_name]
+    _reset_select_cache()
     return metadata
 
 
 def list_tables(metadata):
     return list(metadata.keys())
 
+@handle_db_errors
+@log_time
 def insert(metadata, table_name, table_data, values):
     if table_name not in metadata:
         raise ValueError(f'Таблица "{table_name}" не существует.')
@@ -70,25 +90,34 @@ def insert(metadata, table_name, table_data, values):
         col = user_columns[i]
         row[col["name"]] = _parse_value(values[i], col["type"])
     table_data.append(row)
+    _reset_select_cache()
     return table_data, new_id
 
 
+@handle_db_errors
+@log_time
 def select(table_data, where_clause=None):
     if where_clause is None:
         return table_data
 
-    result = []
-    for row in table_data:
-        ok = True
-        for k, v in where_clause.items():
-            if row.get(k) != v:
-                ok = False
-                break
-        if ok:
-            result.append(row)
-    return result
+    key = (id(table_data), tuple(sorted(where_clause.items())))
+
+    def value_func():
+        result = []
+        for row in table_data:
+            ok = True
+            for k, v in where_clause.items():
+                if row.get(k) != v:
+                    ok = False
+                    break
+            if ok:
+                result.append(row)
+        return result
+
+    return _select_cache(key, value_func)
 
 
+@handle_db_errors
 def update(table_data, set_clause, where_clause):
     updated = 0
     for row in table_data:
@@ -101,9 +130,14 @@ def update(table_data, set_clause, where_clause):
             for k, v in set_clause.items():
                 row[k] = v
             updated += 1
+
+    if updated > 0:
+        _reset_select_cache()
     return table_data, updated
 
 
+@handle_db_errors
+@confirm_action("удаление записи")
 def delete(table_data, where_clause):
     new_data = []
     deleted = 0
@@ -117,6 +151,9 @@ def delete(table_data, where_clause):
             deleted += 1
         else:
             new_data.append(row)
+    
+    if deleted > 0:
+        _reset_select_cache()
     return new_data, deleted
 
 
